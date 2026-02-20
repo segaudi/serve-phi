@@ -31,10 +31,57 @@ fi
 
 if ! docker info >/dev/null 2>&1; then
   echo "Starting Docker daemon..."
+  STARTED=0
+
   if command -v systemctl >/dev/null 2>&1; then
     ${SUDO} systemctl start docker || true
+    if docker info >/dev/null 2>&1; then
+      STARTED=1
+    fi
   else
-    ${SUDO} service docker start || true
+    if command -v service >/dev/null 2>&1; then
+      ${SUDO} service docker start || true
+      if docker info >/dev/null 2>&1; then
+        STARTED=1
+      fi
+    fi
+  fi
+
+  if [[ "${STARTED}" -eq 0 ]]; then
+    if command -v dockerd >/dev/null 2>&1; then
+      echo "systemd/service unavailable; launching dockerd directly..."
+      ${SUDO} nohup dockerd >/tmp/dockerd.log 2>&1 &
+
+      for _ in $(seq 1 40); do
+        if docker info >/dev/null 2>&1; then
+          STARTED=1
+          break
+        fi
+        sleep 1
+      done
+    fi
+  fi
+
+  if [[ "${STARTED}" -eq 0 ]]; then
+    if command -v dockerd >/dev/null 2>&1; then
+      echo "Retrying dockerd with restricted-container flags..."
+      ${SUDO} nohup dockerd --storage-driver=vfs --iptables=false --bridge=none >/tmp/dockerd.log 2>&1 &
+
+      for _ in $(seq 1 40); do
+        if docker info >/dev/null 2>&1; then
+          STARTED=1
+          break
+        fi
+        sleep 1
+      done
+    fi
+  fi
+
+  if [[ "${STARTED}" -eq 0 ]] && ! docker info >/dev/null 2>&1; then
+    echo "ERROR: Docker daemon is still not reachable."
+    echo "Check /tmp/dockerd.log for details."
+    echo "On RunPod, use a template/pod type that supports Docker daemon inside the container."
+    exit 1
   fi
 fi
 
