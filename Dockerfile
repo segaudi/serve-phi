@@ -6,9 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/tmp/huggingface \
     MODEL_ID=microsoft/phi-1_5 \
     WARMUP_ON_STARTUP=1 \
+    MAX_CONCURRENT_REQUESTS=1 \
     ENABLE_OPENAI_API=true \
     OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 \
-    OPENAI_API_BASE_URLS=http://127.0.0.1:8000/v1
+    OPENAI_API_BASE_URLS=http://127.0.0.1:8000/v1 \
+    WEBUI_AUTH=False
 
 WORKDIR /app
 

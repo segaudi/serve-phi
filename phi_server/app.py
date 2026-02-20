@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 import uuid
@@ -6,6 +7,7 @@ from typing import List, Optional, Tuple, Union
 import torch
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
@@ -13,12 +15,15 @@ MODEL_ID = os.getenv("MODEL_ID", "microsoft/phi-1_5")
 API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip() or None
 WARMUP_ON_STARTUP = os.getenv("WARMUP_ON_STARTUP", "1") == "1"
+MAX_CONCURRENT_REQUESTS = max(1, int(os.getenv("MAX_CONCURRENT_REQUESTS", "1")))
+ROLE_MARKERS = ("[SYSTEM]", "[USER]", "[ASSISTANT]")
 
 app = FastAPI(title="Phi OpenAI-Compatible Server", version="0.1.0")
 
 tokenizer = None
 model = None
 device = None
+generation_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
 
 class ChatMessage(BaseModel):
@@ -87,6 +92,16 @@ def build_chat_prompt(messages: List[ChatMessage]) -> str:
     return "".join(lines)
 
 
+def resolve_stop_markers(stop: Optional[Union[str, List[str]]]) -> List[str]:
+    # Default boundaries stop generation before the model starts the next turn.
+    default_stops = ["\n[USER]", "\n[SYSTEM]", "[USER]\n", "[SYSTEM]\n", "[USER]", "[SYSTEM]"]
+    if not stop:
+        return default_stops
+
+    user_stops = [stop] if isinstance(stop, str) else [s for s in stop if s]
+    return user_stops + default_stops
+
+
 def apply_stop_strings(text: str, stop: Optional[Union[str, List[str]]]) -> Tuple[str, bool]:
     if not stop:
         return text, False
@@ -103,6 +118,27 @@ def apply_stop_strings(text: str, stop: Optional[Union[str, List[str]]]) -> Tupl
     if cut_at is None:
         return text, False
     return text[:cut_at], True
+
+
+def sanitize_assistant_text(text: str) -> Tuple[str, bool]:
+    cleaned = text.lstrip()
+    changed = False
+
+    stripped = True
+    while stripped:
+        stripped = False
+        for marker in ROLE_MARKERS:
+            marker_with_newline = f"{marker}\n"
+            if cleaned.startswith(marker_with_newline):
+                cleaned = cleaned[len(marker_with_newline) :].lstrip()
+                changed = True
+                stripped = True
+            elif cleaned.startswith(marker):
+                cleaned = cleaned[len(marker) :].lstrip()
+                changed = True
+                stripped = True
+
+    return cleaned, changed
 
 
 def _token_count(text: str) -> int:
@@ -139,7 +175,9 @@ def generate_text(
 
     new_token_ids = output_ids[0, input_ids.shape[-1] :]
     raw_text = tokenizer.decode(new_token_ids, skip_special_tokens=True)
-    final_text, hit_stop = apply_stop_strings(raw_text, stop)
+    effective_stops = resolve_stop_markers(stop)
+    final_text, hit_stop = apply_stop_strings(raw_text, effective_stops)
+    final_text, stripped_marker = sanitize_assistant_text(final_text)
 
     prompt_tokens = int(input_ids.shape[-1])
     completion_tokens = _token_count(final_text)
@@ -148,8 +186,30 @@ def generate_text(
         "completion_tokens": completion_tokens,
         "total_tokens": prompt_tokens + completion_tokens,
     }
-    finish_reason = "stop" if hit_stop else ("length" if len(new_token_ids) >= max_new_tokens else "stop")
+    finish_reason = (
+        "stop"
+        if hit_stop or stripped_marker
+        else ("length" if len(new_token_ids) >= max_new_tokens else "stop")
+    )
     return final_text, finish_reason, usage
+
+
+async def generate_text_async(
+    prompt: str,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+    stop: Optional[Union[str, List[str]]] = None,
+) -> Tuple[str, str, dict]:
+    async with generation_semaphore:
+        return await run_in_threadpool(
+            generate_text,
+            prompt,
+            max_new_tokens,
+            temperature,
+            top_p,
+            stop,
+        )
 
 
 @app.on_event("startup")
@@ -223,7 +283,7 @@ async def chat_completions(req: ChatCompletionsRequest) -> dict:
     prompt = build_chat_prompt(req.messages)
 
     try:
-        text, finish_reason, usage = generate_text(
+        text, finish_reason, usage = await generate_text_async(
             prompt=prompt,
             max_new_tokens=max_new_tokens,
             temperature=req.temperature,
@@ -257,7 +317,7 @@ async def completions(req: CompletionsRequest) -> dict:
     prompt = f"[USER]\n{prompt_input}\n[ASSISTANT]\n"
 
     try:
-        text, finish_reason, usage = generate_text(
+        text, finish_reason, usage = await generate_text_async(
             prompt=prompt,
             max_new_tokens=max_new_tokens,
             temperature=req.temperature,

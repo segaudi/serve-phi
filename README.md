@@ -58,8 +58,10 @@ In RunPod Console:
    - `OPENAI_API_KEY=<your-key>` (if omitted, defaults to `local-dev-key`)
    - `HF_TOKEN=<optional, only if needed for model access>`
    - `WEBUI_SECRET_KEY=<long-random-string>`
+   - `WEBUI_AUTH=False` (default in image; anonymous access)
    - `MODEL_ID=microsoft/phi-1_5` (optional; default already set)
    - `WARMUP_ON_STARTUP=1` (optional; default already set)
+   - `MAX_CONCURRENT_REQUESTS=1` (default; queued sequential generation for multi-user access)
 
 ## 3) Deploy pod
 
@@ -120,6 +122,10 @@ curl -H "Content-Type: application/json" \
 - Open WebUI cannot list model:
   - Ensure `phi-server` is up (`/health`).
   - In Open WebUI admin settings, OpenAI endpoint should be `http://127.0.0.1:8000/v1`.
+
+- Need login screen removed:
+  - Ensure pod env has `WEBUI_AUTH=False`.
+  - Redeploy fresh pod if a previous persisted user state exists.
 
 - Cold start latency:
   - First request can be slower because model is loaded at startup and warmup may run.

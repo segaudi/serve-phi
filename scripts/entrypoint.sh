@@ -19,6 +19,7 @@ export OPENAI_API_KEY="${OPENAI_API_KEY:-local-dev-key}"
 export ENABLE_OPENAI_API="${ENABLE_OPENAI_API:-true}"
 export OPENAI_API_BASE_URL="${OPENAI_API_BASE_URL:-http://127.0.0.1:8000/v1}"
 export OPENAI_API_BASE_URLS="${OPENAI_API_BASE_URLS:-http://127.0.0.1:8000/v1}"
+export WEBUI_AUTH="${WEBUI_AUTH:-False}"
 
 echo "Starting phi-server on :8000..."
 /opt/phi-venv/bin/python -m uvicorn app:app --app-dir /app/phi_server --host 0.0.0.0 --port 8000 &
